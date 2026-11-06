@@ -1,0 +1,36 @@
+apiVersion: blends.acryl.dev/v1alpha1
+kind: Blueprint
+metadata:
+  id: acrylblends.vehicle-log
+  name: "Vehicle Log"
+  version: 0.1.0
+  category: automotive
+  description: "A personal garage record: odometer, service history, fuel entries, running costs and reminders, with the VIN masked."
+  license: MIT
+  visibility: public
+spec:
+  runtime: cordis
+  parameters:
+    hostname: { type: string, default: 127.0.0.1 }
+  rows:
+    - id: router
+      name: acryl-router
+    - id: home
+      name: home
+    # The domain: the vehicle, service records, fuel entries and reminders, saved as JSON in the app's data home.
+    - id: garage
+      name: garage
+    # The MOTORLOG top bar with the garage links.
+    - id: garage-shell
+      name: garage-shell
+    # The vehicle profile, service history, expenses and the entry forms.
+    - id: vehicle
+      name: vehicle
+    - id: extensions
+      name: extensions
+    - id: server
+      name: acryl-node-server
+      config:
+        hostname: "{{parameters.hostname}}"
+    - id: acryl-door
+      name: acryl-door

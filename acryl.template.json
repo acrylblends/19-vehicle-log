@@ -1,0 +1,5 @@
+{
+  "name": "Vehicle Log",
+  "description": "A personal garage record: odometer, service history, fuel entries, running costs and reminders, with the VIN masked.",
+  "plugins": []
+}

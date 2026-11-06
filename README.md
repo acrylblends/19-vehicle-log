@@ -1,17 +1,22 @@
 # Vehicle Log
 
-Maintain a personal vehicle record including mileage, service history, fuel, expenses and upcoming reminders.
+A personal garage record: odometer, service history, fuel entries, running costs and upcoming reminders, with the VIN masked.
 
-An ACRYL Blends blueprint for the **Automotive** category (`acrylblends.vehicle-log`, category 19 of 100).
-
-Status: designed, being built. `design/spec.md` is the specification and `design/mockup.html` the mockup (open it in a browser). The app itself,
-composed from Cordis plugins (one `plugins/<feature>/` folder and one `blend.yaml` row per feature), lands here when it passes review.
-
-When it is ready you will start it with:
+## Run it
 
 ```sh
-npm create acrylblends@latest my-app -- --from acrylblends.vehicle-log
-cd my-app && npm install && npm run dev
+npm install
+npm start
 ```
 
-Listed on https://acrylblends.github.io/blends and https://acryl.dev/blends.
+Open the address it prints. `npm test` runs the tests (node:test; no network, no key).
+
+## What to ask the chat next
+
+- Log a fuel fill-up at a new odometer and check the consumption.
+- Add a service record for new brake pads and review the yearly cost.
+- Mark the oil-service reminder done.
+
+## Screenshot
+
+![Vehicle Log](docs/screenshot.png)
