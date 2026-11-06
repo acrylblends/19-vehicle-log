@@ -1,48 +1,182 @@
-/** Vehicle Log's types and pure rules: the vehicle, service records, fuel entries and reminders. */
-export interface Vehicle { readonly id: string; readonly make: string; readonly model: string; readonly year: number; readonly registration: string; readonly vinMasked: string; readonly fuelType: string; readonly transmission: string; readonly odometerKm: number; readonly lifetimeCost: number; readonly inspectionDue: string }
-export interface ServiceRecord { readonly id: string; readonly date: string; readonly odometerKm: number; readonly type: 'service' | 'repair' | 'tyres' | 'battery' | 'insurance' | 'inspection'; readonly provider: string; readonly description: string; readonly cost: number }
-export interface FuelEntry { readonly id: string; readonly date: string; readonly odometerKm: number; readonly litres: number; readonly totalCost: number }
-export interface Reminder { readonly id: string; readonly title: string; readonly dueDate?: string; readonly dueOdometerKm?: number; readonly status: 'open' | 'done' }
-export interface GarageState { readonly version: 1; vehicle: Vehicle; services: ServiceRecord[]; fuel: FuelEntry[]; reminders: Reminder[] }
-export type GarageErrorCode = 'invalid' | 'not-found'
-export class GarageError extends Error { readonly code: GarageErrorCode; constructor(code: GarageErrorCode, message: string) { super(message); this.code = code; this.name = 'GarageError' } }
-const pad = (n: number): string => String(n).padStart(2, '0')
-export const dayOf = (date: Date): string => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
-export const stampOf = (date: Date): string => `${dayOf(date)}T${pad(date.getHours())}:${pad(date.getMinutes())}`
-export function shortDate(day: string): string { return new Date(`${day}T00:00:00`).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase() }
-export function euro(value: number): string { return `€${new Intl.NumberFormat('en-GB', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(Math.round(value * 100) / 100)}` }
-export function number(value: number, digits = 0): string { return new Intl.NumberFormat('en-GB', { minimumFractionDigits: digits, maximumFractionDigits: digits }).format(value) }
-export function cleanPositive(value: unknown, field: string): number {
-  const numberValue = Number(value)
-  if (!Number.isFinite(numberValue) || numberValue <= 0) throw new GarageError('invalid', `${field} must be a positive number.`)
-  return numberValue
+/** Vehicle Log's types and pure rules: the vehicle, services, fuel, expenses, reminders and the running-cost maths. */
+export type ServiceType = 'service' | 'repair' | 'tyres' | 'inspection' | 'other'
+export type ExpenseCategory = 'insurance' | 'tax' | 'inspection' | 'other'
+export type ReminderStatus = 'open' | 'done'
+
+export interface Vehicle {
+  readonly id: string
+  readonly make: string
+  readonly model: string
+  readonly year: number
+  readonly registration: string
+  readonly vinMasked: string
+  readonly fuelType: string
+  readonly transmission: string
+  readonly odometerKm: number
+  readonly averageConsumption: number
+  readonly currency: string
+  readonly fuelUnit: string
+  /** Costs from before the app's records, so the lifetime cost per km is complete. */
+  readonly openingCost: number
 }
-export function cleanDay(value: unknown, field: string): string {
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) throw new GarageError('invalid', `${field} is a date like 2026-11-06.`)
-  return value
+
+export interface ServiceRecord {
+  readonly id: string
+  readonly vehicleId: string
+  readonly date: string
+  readonly odometerKm: number
+  readonly type: ServiceType
+  readonly provider: string
+  readonly description: string
+  readonly cost: number
+  readonly parts: readonly string[]
 }
-/** The average consumption from the fuel entries: litres per 100 km over the odometer span. */
-export function consumptionOf(fuel: readonly FuelEntry[]): number {
-  if (fuel.length < 2) return 0
-  const sorted = [...fuel].sort((a, b) => a.odometerKm - b.odometerKm)
-  const first = sorted[0] as FuelEntry
-  const last = sorted[sorted.length - 1] as FuelEntry
-  const litres = sorted.reduce((sum, entry) => sum + entry.litres, 0)
-  const km = last.odometerKm - first.odometerKm
-  return km === 0 ? 0 : (litres / km) * 100
+
+export interface FuelEntry {
+  readonly id: string
+  readonly vehicleId: string
+  readonly date: string
+  readonly odometerKm: number
+  readonly litres: number
+  readonly totalCost: number
 }
-export function yearCost(services: readonly ServiceRecord[], fuel: readonly FuelEntry[], year: number): number {
-  const prefix = String(year)
-  return services.filter((record) => record.date.startsWith(prefix)).reduce((sum, record) => sum + record.cost, 0) + fuel.filter((entry) => entry.date.startsWith(prefix)).reduce((sum, entry) => sum + entry.totalCost, 0)
+
+export interface Expense {
+  readonly id: string
+  readonly vehicleId: string
+  readonly date: string
+  readonly category: ExpenseCategory
+  readonly amount: number
+  readonly note: string
 }
-export function monthlyCosts(services: readonly ServiceRecord[], fuel: readonly FuelEntry[], year: number): number[] {
+
+export interface Reminder {
+  readonly id: string
+  readonly vehicleId: string
+  readonly title: string
+  readonly dueDate?: string
+  readonly dueOdometerKm?: number
+  readonly status: ReminderStatus
+}
+
+export interface GarageState {
+  readonly version: 1
+  vehicle: Vehicle
+  services: ServiceRecord[]
+  fuel: FuelEntry[]
+  expenses: Expense[]
+  reminders: Reminder[]
+}
+
+export type GarageErrorCode = 'invalid' | 'not-found' | 'conflict' | 'storage'
+export class GarageError extends Error {
+  readonly code: GarageErrorCode
+  constructor(code: GarageErrorCode, message: string) {
+    super(message)
+    this.code = code
+    this.name = 'GarageError'
+  }
+}
+
+export const SERVICE_TYPES: readonly ServiceType[] = ['service', 'repair', 'tyres', 'inspection', 'other']
+export const EXPENSE_CATEGORIES: readonly ExpenseCategory[] = ['insurance', 'tax', 'inspection', 'other']
+
+const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
+
+/** `18 SEP 2026` from `2026-09-18`. */
+export function dateLabel(date: string): string {
+  const parsed = new Date(`${date}T00:00:00Z`)
+  return `${String(parsed.getUTCDate()).padStart(2, '0')} ${MONTHS[parsed.getUTCMonth()] ?? ''} ${String(parsed.getUTCFullYear())}`
+}
+
+export function monthLabel(month: number): string {
+  return MONTHS[month] ?? ''
+}
+
+export function money(value: number, currency = '€'): string {
+  return `${currency}${value.toLocaleString('en-GB', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+}
+
+export function money2(value: number, currency = '€'): string {
+  return `${currency}${value.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+export function number(value: number): string {
+  return value.toLocaleString('en-GB')
+}
+
+export interface CostStats {
+  readonly costThisYear: number
+  readonly costPerKm: number
+  readonly nextServiceKm: number
+  readonly totalCost: number
+}
+
+export function costsOf(state: GarageState, year: number): CostStats {
+  const services = state.services.reduce((sum, record) => sum + record.cost, 0)
+  const fuel = state.fuel.reduce((sum, entry) => sum + entry.totalCost, 0)
+  const expenses = state.expenses.reduce((sum, expense) => sum + expense.amount, 0)
+  const thisYear =
+    state.services.filter((record) => record.date.startsWith(String(year))).reduce((sum, record) => sum + record.cost, 0) +
+    state.fuel.filter((entry) => entry.date.startsWith(String(year))).reduce((sum, entry) => sum + entry.totalCost, 0) +
+    state.expenses.filter((expense) => expense.date.startsWith(String(year))).reduce((sum, expense) => sum + expense.amount, 0)
+  const total = state.vehicle.openingCost + services + fuel + expenses
+  const next = state.reminders.find((reminder) => reminder.status === 'open' && reminder.dueOdometerKm !== undefined)
+  return {
+    costThisYear: thisYear,
+    costPerKm: state.vehicle.odometerKm === 0 ? 0 : total / state.vehicle.odometerKm,
+    nextServiceKm: next?.dueOdometerKm === undefined ? 0 : Math.max(0, next.dueOdometerKm - state.vehicle.odometerKm),
+    totalCost: total,
+  }
+}
+
+/** Twelve monthly totals for the year: services, fuel and expenses. */
+export function monthlyCosts(state: GarageState, year: number): number[] {
   const totals = Array.from({ length: 12 }, () => 0)
-  for (const record of services) if (record.date.startsWith(String(year))) totals[Number(record.date.slice(5, 7)) - 1] = (totals[Number(record.date.slice(5, 7)) - 1] ?? 0) + record.cost
-  for (const entry of fuel) if (entry.date.startsWith(String(year))) totals[Number(entry.date.slice(5, 7)) - 1] = (totals[Number(entry.date.slice(5, 7)) - 1] ?? 0) + entry.totalCost
+  const add = (date: string, amount: number): void => {
+    if (!date.startsWith(String(year))) return
+    const month = Number.parseInt(date.slice(5, 7), 10) - 1
+    totals[month] = (totals[month] ?? 0) + amount
+  }
+  for (const record of state.services) add(record.date, record.cost)
+  for (const entry of state.fuel) add(entry.date, entry.totalCost)
+  for (const expense of state.expenses) add(expense.date, expense.amount)
   return totals
 }
-export function sparkPath(values: readonly number[], width = 650, height = 130): string {
-  if (values.length === 0) return ''
-  const max = Math.max(...values, 1)
-  return values.map((value, index) => `${index === 0 ? 'M' : 'L'}${((index / Math.max(1, values.length - 1)) * width).toFixed(0)} ${(height - (value / max) * height).toFixed(0)}`).join(' ')
+
+export function cleanDate(value: unknown): string {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text) || Number.isNaN(new Date(`${text}T00:00:00Z`).getTime()))
+    throw new GarageError('invalid', 'Enter a date as YYYY-MM-DD.')
+  return text
+}
+
+export function cleanOdometer(value: unknown): number {
+  const number = Number(value)
+  if (!Number.isFinite(number) || number < 0 || number > 2_000_000) throw new GarageError('invalid', 'The odometer must be between 0 and 2,000,000 km.')
+  return Math.round(number)
+}
+
+export function cleanPositive(value: unknown, field: string): number {
+  const number = Number(value)
+  if (!Number.isFinite(number) || number <= 0) throw new GarageError('invalid', `${field} must be a positive number.`)
+  return Math.round(number * 100) / 100
+}
+
+export function cleanText(value: unknown, field: string, max = 200): string {
+  if (typeof value !== 'string' || value.trim() === '') throw new GarageError('invalid', `${field} is required.`)
+  return value.trim().slice(0, max)
+}
+
+export function cleanServiceType(value: unknown): ServiceType {
+  return SERVICE_TYPES.includes(value as ServiceType) ? (value as ServiceType) : 'service'
+}
+
+export function cleanCategory(value: unknown): ExpenseCategory {
+  return EXPENSE_CATEGORIES.includes(value as ExpenseCategory) ? (value as ExpenseCategory) : 'other'
+}
+
+export function cleanParts(value: unknown): string[] {
+  if (typeof value !== 'string') return []
+  return value.split(',').map((part) => part.trim()).filter((part) => part !== '').slice(0, 8)
 }
